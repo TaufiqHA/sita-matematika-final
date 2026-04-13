@@ -391,3 +391,250 @@ Sebelum berpindah ke Blok selanjutnya, pastikan hal-hal berikut telah diuji (bis
 5. [ ] **File Storage & Otorisasi:** Mengecek bahwa file fisik benar-benar ada di storage, dan pengguna yang role-nya tidak sesuai (misal Mahasiswa mencoba hit endpoint review DPA) mendapatkan response `403 Forbidden`.
 
 **Akhir dari Perencanaan Blok 2.**
+
+---
+
+# Planning Implementasi Blok 3: Modul Pendaftaran Seminar Proposal (Backend)
+
+Dokumen ini berisi langkah-langkah terstruktur untuk mengimplementasikan **Blok 3** dari `docs/timeline.md`. Fokus pada fitur mahasiswa mendaftar seminar proposal (termasuk upload berkas terkait) dan review/verifikasi oleh Staf TU (Tata Usaha).
+
+## Tujuan Utama Blok 3
+1. Membuat tabel `pendaftaran_seminars` beserta Model dan Relasinya.
+2. Membuat tabel `berkas_seminars` untuk menyimpan multiple file per pendaftaran.
+3. Membuat Form Request untuk validasi input (submit pendaftaran, upload berkas tambahan, verifikasi TU).
+4. Membuat Controller `PendaftaranSeminarController` untuk menangani CRUD.
+5. Menambahkan endpoint API yang dilindungi oleh middleware berbasis role.
+
+---
+
+## Langkah 1: Pembuatan Migration dan Model
+
+Jalankan perintah berikut di terminal untuk membuat Model beserta Migration untuk Pendaftaran Seminar dan Berkas Seminar:
+```bash
+php artisan make:model PendaftaranSeminar -m
+php artisan make:model BerkasSeminar -m
+```
+
+### 1.1 Struktur Tabel `pendaftaran_seminars` di Migration
+Buka file migrasi untuk `pendaftaran_seminars` di `database/migrations/` dan sesuaikan struktur tabelnya:
+```php
+public function up()
+{
+    Schema::create('pendaftaran_seminars', function (Blueprint $table) {
+        $table->id();
+        $table->foreignId('mahasiswa_id')->constrained('users')->cascadeOnDelete();
+        $table->enum('jenis_seminar', ['proposal', 'hasil', 'munaqasyah']);
+        $table->enum('status', ['diajukan', 'perlu_revisi', 'diverifikasi', 'dijadwalkan', 'selesai'])->default('diajukan');
+        $table->text('catatan_tu')->nullable();
+        $table->timestamps();
+    });
+}
+```
+
+### 1.2 Struktur Tabel `berkas_seminars` di Migration
+Buka file migrasi untuk `berkas_seminars` dan sesuaikan:
+```php
+public function up()
+{
+    Schema::create('berkas_seminars', function (Blueprint $table) {
+        $table->id();
+        $table->foreignId('pendaftaran_id')->constrained('pendaftaran_seminars')->cascadeOnDelete();
+        $table->string('nama_berkas'); // Contoh: 'KRS', 'Kwitansi', 'Lembar Persetujuan'
+        $table->string('file_path');   // Path file
+        $table->string('status_verifikasi')->default('pending'); // pending, valid, tidak_valid
+        $table->timestamps();
+    });
+}
+```
+
+Jalankan migrasi:
+```bash
+php artisan migrate
+```
+
+---
+
+## Langkah 2: Setup Relasi pada Model
+
+### 2.1 Model `PendaftaranSeminar`
+Buka `App\Models\PendaftaranSeminar` dan tambahkan properti fillable serta relasi:
+```php
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+
+class PendaftaranSeminar extends Model
+{
+    use HasFactory;
+
+    protected $fillable = [
+        'mahasiswa_id',
+        'jenis_seminar',
+        'status',
+        'catatan_tu',
+    ];
+
+    public function mahasiswa()
+    {
+        return $this->belongsTo(User::class, 'mahasiswa_id');
+    }
+
+    public function berkas()
+    {
+        return $this->hasMany(BerkasSeminar::class, 'pendaftaran_id');
+    }
+}
+```
+
+### 2.2 Model `BerkasSeminar`
+Buka `App\Models\BerkasSeminar` dan tambahkan hal berikut:
+```php
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+
+class BerkasSeminar extends Model
+{
+    use HasFactory;
+
+    protected $fillable = [
+        'pendaftaran_id',
+        'nama_berkas',
+        'file_path',
+        'status_verifikasi',
+    ];
+
+    public function pendaftaran()
+    {
+        return $this->belongsTo(PendaftaranSeminar::class, 'pendaftaran_id');
+    }
+}
+```
+
+**Instruksi Tambahan untuk `App\Models\User`:**
+Tambahkan fungsi untuk mengambil daftar pendaftaran seminar bagi mahasiswa.
+```php
+public function pendaftaranSeminars()
+{
+    return $this->hasMany(PendaftaranSeminar::class, 'mahasiswa_id');
+}
+```
+
+---
+
+## Langkah 3: Pembuatan Form Request (Validasi)
+
+### 3.1 Request untuk Submit Pendaftaran (Beserta Berkas)
+Jalankan perintah:
+```bash
+php artisan make:request StorePendaftaranSeminarRequest
+```
+**Instruksi `StorePendaftaranSeminarRequest`:**
+- Ubah method `authorize()` menjadi `true` (atau batasi khusus role Mahasiswa).
+- Tambahkan rules di method `rules()`. Kita mengasumsikan pendaftaran langsung di-submit beserta array file berkas.
+```php
+return [
+    'jenis_seminar' => 'required|in:proposal,hasil,munaqasyah',
+    'berkas' => 'required|array',
+    'berkas.*.nama_berkas' => 'required|string|max:255',
+    'berkas.*.file' => 'required|file|mimes:pdf,jpg,png|max:5120', // Maks 5MB per file
+];
+```
+
+### 3.2 Request untuk Verifikasi TU
+Jalankan perintah:
+```bash
+php artisan make:request VerifikasiSeminarRequest
+```
+**Instruksi `VerifikasiSeminarRequest`:**
+- Ubah method `authorize()` menjadi `true` (atau batasi khusus role TU).
+- Tambahkan rules:
+```php
+return [
+    'status' => 'required|in:diverifikasi,perlu_revisi',
+    'catatan_tu' => 'nullable|string',
+    // Opsional: Jika TU mereview per berkas
+    'berkas_status' => 'nullable|array',
+    'berkas_status.*.id' => 'required|exists:berkas_seminars,id',
+    'berkas_status.*.status' => 'required|in:valid,tidak_valid',
+];
+```
+
+---
+
+## Langkah 4: Pembuatan Controller
+
+Jalankan perintah:
+```bash
+php artisan make:controller Api/v1/PendaftaranSeminarController
+```
+
+**Instruksi untuk `PendaftaranSeminarController`:**
+
+1. **`index(Request $request)`**
+   - Ambil data `PendaftaranSeminar` beserta relasi `berkas` dan `mahasiswa`.
+   - **Filter Role:**
+     - Jika role = `Mahasiswa`: filter berdasarkan `$user->id`.
+     - Jika role = `TU`: tampilkan seluruh data pendaftaran yang ada (biasanya diurutkan dari yang statusnya `diajukan`).
+   - Return menggunakan JSON.
+
+2. **`store(StorePendaftaranSeminarRequest $request)`**
+   - Gunakan `DB::transaction()` untuk memastikan integritas data.
+   - Buat record utama: `$pendaftaran = $request->user()->pendaftaranSeminars()->create(['jenis_seminar' => $request->jenis_seminar]);`.
+   - Lakukan loop pada array `$request->berkas`:
+     - Simpan masing-masing file ke `storage/app/private/berkas_seminar`.
+     - Buat record `BerkasSeminar` terkait ke tabel.
+   - Commit transaction dan return response data dengan HTTP code 201.
+
+3. **`uploadBerkasTambahan(Request $request, $id)`** *(Optional endpoint, tapi ditulis di docs timeline)*
+   - Endpoint khusus jika mahasiswa ingin menambah berkas secara susulan (karena revisi).
+   - Validasi input `nama_berkas` dan `file`. Simpan file dan hubungkan ke ID pendaftaran bersangkutan.
+
+4. **`verifikasi(VerifikasiSeminarRequest $request, $id)`**
+   - Cari data `PendaftaranSeminar` berdasarkan ID.
+   - Update field `status` dan `catatan_tu` (hanya jika aktor adalah TU).
+   - Jika TU juga mengirim array `berkas_status`, lakukan iterasi dan update field `status_verifikasi` untuk setiap `BerkasSeminar` yang dituju.
+   - Return JSON response data terbaru.
+
+---
+
+## Langkah 5: Setup Routes & Middleware
+
+Buka file `routes/api.php`, tambahkan rute Pendaftaran Seminar di dalam block middleware Sanctum:
+
+```php
+use App\Http\Controllers\Api\v1\PendaftaranSeminarController;
+
+Route::middleware('auth:sanctum')->prefix('v1/seminar')->group(function () {
+    
+    // List pendaftaran seminar (di-filter role pada controller)
+    Route::get('/pendaftaran', [PendaftaranSeminarController::class, 'index']);
+    Route::get('/pendaftaran/{id}', [PendaftaranSeminarController::class, 'show']);
+
+    // Khusus Mahasiswa
+    Route::post('/pendaftaran', [PendaftaranSeminarController::class, 'store'])
+        ->middleware('role:Mahasiswa');
+    Route::post('/pendaftaran/{id}/berkas', [PendaftaranSeminarController::class, 'uploadBerkasTambahan'])
+        ->middleware('role:Mahasiswa');
+
+    // Khusus TU
+    Route::patch('/pendaftaran/{id}/verifikasi', [PendaftaranSeminarController::class, 'verifikasi'])
+        ->middleware('role:TU');
+
+});
+```
+
+---
+
+## Langkah 6: Tahap Verifikasi (Acceptance Criteria)
+
+Sebelum menganggap Blok 3 selesai, pastikan skenario berikut telah diuji (via Postman/Insomnia):
+
+1. [ ] **Submit Pendaftaran (Mahasiswa):** Melakukan `POST /api/v1/seminar/pendaftaran` dengan form-data yang berisi payload `jenis_seminar` dan *multiple files* `berkas[0][nama_berkas]`, `berkas[0][file]`, dll. Berhasil mengembalikan HTTP 201 beserta entri relasi di `berkas_seminars`.
+2. [ ] **List Pendaftaran (Mahasiswa & TU):** `GET /api/v1/seminar/pendaftaran` menampilkan hasil yang benar sesuai otorisasi pemanggil (Mahasiswa melihat datanya sendiri, TU melihat semua pendaftaran).
+3. [ ] **Verifikasi TU:** `PATCH /api/v1/seminar/pendaftaran/{id}/verifikasi` oleh TU berhasil merubah status (misal menjadi `diverifikasi` atau `perlu_revisi`) dan menyimpan catatan TU.
+4. [ ] **Upload File Susulan (Optional):** Mahasiswa bisa melakukan POST di rute `/pendaftaran/{id}/berkas` untuk melampirkan berkas yang kurang atau direvisi.
+
+**Akhir dari Perencanaan Blok 3.**

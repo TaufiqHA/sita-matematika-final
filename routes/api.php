@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\v1\PendaftaranSeminarController;
 use App\Http\Controllers\Api\v1\PengajuanJudulController;
 use Illuminate\Support\Facades\Route;
 
@@ -11,16 +12,29 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/me', [AuthController::class, 'me']);
 
     Route::prefix('v1')->group(function () {
-        // Rute untuk Mahasiswa & DPA (Filter list data ditangani di controller)
+        // ... (existing pengajuan-judul routes)
         Route::get('/pengajuan-judul', [PengajuanJudulController::class, 'index']);
         Route::get('/pengajuan-judul/{id}', [PengajuanJudulController::class, 'show']);
-
-        // Khusus Mahasiswa
         Route::post('/pengajuan-judul', [PengajuanJudulController::class, 'store'])
             ->middleware('role:Mahasiswa');
-
-        // Khusus DPA
         Route::patch('/pengajuan-judul/{id}/review', [PengajuanJudulController::class, 'review'])
             ->middleware('role:DPA');
+
+        // Pendaftaran Seminar
+        Route::prefix('seminar')->group(function () {
+            // List pendaftaran seminar (di-filter role pada controller)
+            Route::get('/pendaftaran', [PendaftaranSeminarController::class, 'index']);
+            Route::get('/pendaftaran/{id}', [PendaftaranSeminarController::class, 'show']);
+
+            // Khusus Mahasiswa
+            Route::post('/pendaftaran', [PendaftaranSeminarController::class, 'store'])
+                ->middleware('role:Mahasiswa');
+            Route::post('/pendaftaran/{id}/berkas', [PendaftaranSeminarController::class, 'uploadBerkasTambahan'])
+                ->middleware('role:Mahasiswa');
+
+            // Khusus TU
+            Route::patch('/pendaftaran/{id}/verifikasi', [PendaftaranSeminarController::class, 'verifikasi'])
+                ->middleware('role:TU');
+        });
     });
 });
