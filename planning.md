@@ -638,3 +638,219 @@ Sebelum menganggap Blok 3 selesai, pastikan skenario berikut telah diuji (via Po
 4. [ ] **Upload File Susulan (Optional):** Mahasiswa bisa melakukan POST di rute `/pendaftaran/{id}/berkas` untuk melampirkan berkas yang kurang atau direvisi.
 
 **Akhir dari Perencanaan Blok 3.**
+
+---
+
+# Planning Implementasi Blok 4: Notifikasi & Polish API (Backend)
+
+Dokumen ini berisi langkah-langkah implementasi **Blok 4** dari `docs/timeline.md`. Fokusnya adalah menyediakan sistem notifikasi dasar (in-app polling) serta meninjau/merapikan seluruh API Endpoint (Polish API).
+
+## Tujuan Utama Blok 4
+1. Membuat migrasi untuk tabel `notifications` bawaan Laravel.
+2. Membuat Helper atau Job (Trigger) untuk mengirimkan notifikasi.
+3. Menyambungkan trigger notifikasi di Controller terkait (Pengajuan Judul & Pendaftaran Seminar).
+4. Membuat endpoint Notifikasi (`GET list` & `PATCH read`).
+5. Melakukan review komprehensif pada API Routes dan Middleware untuk menghindari _500 Internal Server Error_.
+
+---
+
+## Langkah 1: Setup Tabel Notifikasi
+
+Kita akan menggunakan fitur _Database Notifications_ bawaan dari Laravel.
+
+Jalankan perintah berikut:
+```bash
+php artisan notifications:table
+php artisan migrate
+```
+
+*Ini akan membuat tabel `notifications` yang dapat menyimpan pesan dalam bentuk JSON untuk masing-masing user.*
+
+---
+
+## Langkah 2: Pembuatan Notification Class
+
+Kita perlu membuat kelas notifikasi untuk masing-masing aksi atau satu kelas generic yang bisa di-reuse. Di sini, kita akan buat satu notifikasi *generic* untuk mempercepat.
+
+```bash
+php artisan make:notification SystemNotification
+```
+
+**Instruksi untuk `App\Notifications\SystemNotification`:**
+Buka file tersebut dan ubah strukturnya menjadi:
+```php
+namespace App\Notifications;
+
+use Illuminate\Bus\Queueable;
+use Illuminate\Notifications\Notification;
+
+class SystemNotification extends Notification
+{
+    use Queueable;
+
+    public $title;
+    public $message;
+    public $actionUrl;
+
+    public function __construct($title, $message, $actionUrl = null)
+    {
+        $this->title = $title;
+        $this->message = $message;
+        $this->actionUrl = $actionUrl;
+    }
+
+    public function via($notifiable)
+    {
+        return ['database']; // Hanya menyimpan ke database
+    }
+
+    public function toArray($notifiable)
+    {
+        return [
+            'title' => $this->title,
+            'message' => $this->message,
+            'action_url' => $this->actionUrl,
+        ];
+    }
+}
+```
+
+---
+
+## Langkah 3: Menambahkan Trigger Notifikasi ke Controller
+
+Buka controller yang sudah dibuat sebelumnya (di Blok 2 dan 3), dan tambahkan logika `Notification::send()` atau `$user->notify()`.
+
+### 3.1 Trigger di `PengajuanJudulController`
+- **Di method `store()`** (Saat Mahasiswa mengajukan judul):
+  - Cari DPA dari mahasiswa yang bersangkutan.
+  - Jika DPA ditemukan, kirim notif:
+    ```php
+    use App\Notifications\SystemNotification;
+    
+    $dpa = $request->user()->mahasiswa->dpa; // Pastikan relasi diload
+    if ($dpa) {
+        $dpa->notify(new SystemNotification(
+            'Pengajuan Judul Baru',
+            $request->user()->name . ' telah mengajukan judul baru.',
+            '/dpa/pengajuan-judul/' . $pengajuanJudul->id
+        ));
+    }
+    ```
+
+- **Di method `review()`** (Saat DPA memberikan review):
+  - Ambil relasi Mahasiswa pembuat judul.
+  - Kirim notif:
+    ```php
+    $mahasiswaUser = $pengajuanJudul->mahasiswa;
+    $mahasiswaUser->notify(new SystemNotification(
+        'Update Pengajuan Judul',
+        'Status pengajuan judul Anda saat ini: ' . $request->status,
+        '/mahasiswa/pengajuan-judul'
+    ));
+    ```
+
+### 3.2 Trigger di `PendaftaranSeminarController`
+- **Di method `store()`** (Saat Mahasiswa mendaftar):
+  - Cari seluruh user dengan role `TU`.
+  - Kirim notif secara massal:
+    ```php
+    use App\Models\User;
+    use Illuminate\Support\Facades\Notification;
+
+    $usersTU = User::role('TU')->get(); // Menggunakan fungsi spatie permission
+    Notification::send($usersTU, new SystemNotification(
+        'Pendaftaran Seminar Baru',
+        $request->user()->name . ' mendaftar seminar ' . $request->jenis_seminar,
+        '/tu/seminar/verifikasi'
+    ));
+    ```
+
+- **Di method `verifikasi()`** (Saat TU memverifikasi):
+  - Kirim notifikasi kembali ke Mahasiswa:
+    ```php
+    $mahasiswaUser = $pendaftaranSeminar->mahasiswa;
+    $mahasiswaUser->notify(new SystemNotification(
+        'Verifikasi Pendaftaran Seminar',
+        'Pendaftaran seminar Anda telah diverifikasi oleh TU dengan status: ' . $request->status,
+        '/mahasiswa/seminar/status'
+    ));
+    ```
+
+---
+
+## Langkah 4: Pembuatan API Endpoint untuk Notifikasi
+
+Buat controller sederhana untuk menangani notifikasi.
+```bash
+php artisan make:controller Api/v1/NotificationController
+```
+
+**Instruksi untuk `NotificationController`:**
+Di dalamnya, buat 2 metode:
+1. **`index(Request $request)`**:
+   ```php
+   // Mengambil notifikasi yang belum dibaca
+   $notifications = $request->user()->unreadNotifications;
+   return response()->json($notifications);
+   ```
+
+2. **`markAsRead(Request $request, $id)`**:
+   ```php
+   // Tandai satu notifikasi sebagai telah dibaca
+   $notification = $request->user()->notifications()->findOrFail($id);
+   $notification->markAsRead();
+   
+   return response()->json(['message' => 'Notification marked as read']);
+   ```
+   *(Opsional: Tambahkan method `markAllAsRead()` jika dibutuhkan).*
+
+### Daftarkan Routes
+Tambahkan di file `routes/api.php` di dalam blok middleware Sanctum:
+```php
+use App\Http\Controllers\Api\v1\NotificationController;
+
+Route::middleware('auth:sanctum')->prefix('v1')->group(function () {
+    Route::get('/notifications', [NotificationController::class, 'index']);
+    Route::patch('/notifications/{id}/read', [NotificationController::class, 'markAsRead']);
+    
+    // Opsional
+    // Route::post('/notifications/read-all', [NotificationController::class, 'markAllAsRead']);
+});
+```
+
+---
+
+## Langkah 5: Polish API & Error Handling (Safety Check)
+
+Untuk memastikan kelancaran demo, pastikan framework merespon error secara konsisten (JSON) agar tidak merusak frontend (CORS Issue/HTML Response).
+
+**Instruksi:**
+1. Buka file `bootstrap/app.php` (Laravel 11).
+2. Tambahkan handler exception agar _Route Not Found_ atau _Validation Error_ selalu mengembalikan format JSON ketika endpoint diakses dari rute `/api/*`. 
+*(Pada Laravel 11, umumnya sudah diatur default mengembalikan JSON jika header `Accept: application/json` diset, namun frontend Vue menggunakan Axios terkadang tidak set up secara sempurna. Pastikan error handler fallback-nya aman).*
+
+```php
+->withExceptions(function (Exceptions $exceptions) {
+    $exceptions->render(function (AuthenticationException $e, Request $request) {
+        if ($request->is('api/*')) {
+            return response()->json([
+                'message' => 'Unauthenticated.'
+            ], 401);
+        }
+    });
+})
+```
+
+---
+
+## Langkah 6: Tahap Verifikasi (Acceptance Criteria)
+
+Sebelum menganggap Blok 4 selesai, lakukan pengujian seluruh _flow_ dari Blok 1 hingga Blok 4 menggunakan Postman (tanpa frontend).
+
+1. [ ] **Trigger Notif:** Mengirim request `POST` untuk pengajuan judul atau pendaftaran seminar, kemudian mengecek apakah tabel `notifications` di database terisi row baru.
+2. [ ] **Get Notifications:** Memanggil `GET /api/v1/notifications` menggunakan *cookie session* dari user tujuan (misal TU/DPA), dan memastikan respon berupa _array_ notifikasi.
+3. [ ] **Read Notifications:** Memanggil `PATCH /api/v1/notifications/{id}/read`, lalu memanggil `GET` kembali untuk memastikan pesan tersebut sudah tidak ada di list `unreadNotifications`.
+4. [ ] **Global Error Check:** Memasukkan parameter yang salah pada request (contoh: jenis seminar yang tidak valid) dan pastikan *API* mengembalikan response code `422 Unprocessable Entity` dengan rincian error format JSON, bukan halaman *HTML exception*.
+
+**Akhir dari Perencanaan Blok 4.** API Backend kini sudah fungsional (End-to-End) dan siap disambungkan dengan *Vue Frontend (Blok 6-10)*.
