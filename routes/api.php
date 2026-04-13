@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\v1\NotificationController;
 use App\Http\Controllers\Api\v1\PendaftaranSeminarController;
 use App\Http\Controllers\Api\v1\PengajuanJudulController;
 use Illuminate\Support\Facades\Route;
@@ -36,5 +37,10 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::patch('/pendaftaran/{id}/verifikasi', [PendaftaranSeminarController::class, 'verifikasi'])
                 ->middleware('role:TU');
         });
+
+        // Notifications
+        Route::get('/notifications', [NotificationController::class, 'index']);
+        Route::patch('/notifications/{id}/read', [NotificationController::class, 'markAsRead']);
+        Route::post('/notifications/read-all', [NotificationController::class, 'markAllAsRead']);
     });
 });

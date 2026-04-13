@@ -7,9 +7,12 @@ use App\Http\Requests\StorePendaftaranSeminarRequest;
 use App\Http\Requests\VerifikasiSeminarRequest;
 use App\Models\BerkasSeminar;
 use App\Models\PendaftaranSeminar;
+use App\Models\User;
+use App\Notifications\SystemNotification;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Storage;
 
 class PendaftaranSeminarController extends Controller
@@ -50,6 +53,14 @@ class PendaftaranSeminarController extends Controller
                     'file_path' => $path,
                 ]);
             }
+
+            // Notify TU
+            $usersTU = User::role('TU')->get();
+            Notification::send($usersTU, new SystemNotification(
+                'Pendaftaran Seminar Baru',
+                $request->user()->name . ' mendaftar seminar ' . $request->jenis_seminar,
+                '/tu/seminar/verifikasi'
+            ));
 
             return response()->json($pendaftaran->load('berkas'), 201);
         });
@@ -111,6 +122,16 @@ class PendaftaranSeminarController extends Controller
                         ->where('pendaftaran_id', $pendaftaran->id)
                         ->update(['status_verifikasi' => $item['status']]);
                 }
+            }
+
+            // Notify Mahasiswa
+            $mahasiswaUser = $pendaftaran->mahasiswa;
+            if ($mahasiswaUser) {
+                $mahasiswaUser->notify(new SystemNotification(
+                    'Verifikasi Pendaftaran Seminar',
+                    'Pendaftaran seminar Anda telah diverifikasi oleh TU dengan status: ' . $request->status,
+                    '/mahasiswa/seminar/status'
+                ));
             }
 
             return response()->json($pendaftaran->load('berkas'));

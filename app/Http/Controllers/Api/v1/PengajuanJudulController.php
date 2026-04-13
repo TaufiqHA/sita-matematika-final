@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\ReviewPengajuanJudulRequest;
 use App\Http\Requests\StorePengajuanJudulRequest;
 use App\Models\PengajuanJudul;
+use App\Notifications\SystemNotification;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -45,6 +46,17 @@ class PengajuanJudulController extends Controller
 
         $pengajuan = $request->user()->pengajuanJuduls()->create($validated);
 
+        // Notify DPA
+        $user = $request->user()->load('mahasiswa.dpa');
+        $dpa = $user->mahasiswa?->dpa;
+        if ($dpa) {
+            $dpa->notify(new SystemNotification(
+                'Pengajuan Judul Baru',
+                $user->name . ' telah mengajukan judul baru.',
+                '/dpa/pengajuan-judul/' . $pengajuan->id
+            ));
+        }
+
         return response()->json($pengajuan->load('mahasiswa'), 201);
     }
 
@@ -68,6 +80,16 @@ class PengajuanJudulController extends Controller
         $pengajuan = PengajuanJudul::findOrFail($id);
 
         $pengajuan->update($request->validated());
+
+        // Notify Mahasiswa
+        $mahasiswaUser = $pengajuan->mahasiswa;
+        if ($mahasiswaUser) {
+            $mahasiswaUser->notify(new SystemNotification(
+                'Update Pengajuan Judul',
+                'Status pengajuan judul Anda saat ini: ' . $request->status,
+                '/mahasiswa/pengajuan-judul'
+            ));
+        }
 
         return response()->json($pengajuan->load('mahasiswa'));
     }
