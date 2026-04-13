@@ -185,3 +185,209 @@ Sebelum melanjutkan ke **Blok 2**, Junior Dev/AI Agent harus memverifikasi hal-h
 4. [ ] Memastikan data user hasil seeding di database berisi tabel yang terhubung (User punya 1 Mahasiswa atau 1 Dosen sesuai role).
 
 **Akhir dari Perencanaan Blok 1.** Jika berhasil dicentang semua, sistem authentication telah berjalan sesuai kebutuhan proyek.
+
+---
+
+# Planning Implementasi Blok 2: Modul Pengajuan Judul (Backend)
+
+Dokumen ini berisi langkah-langkah terstruktur untuk mengimplementasikan **Blok 2** dari `docs/timeline.md`. Fokus pada fitur pengajuan judul oleh Mahasiswa dan review (approve/tolak) oleh DPA (Dosen Pembimbing Akademik).
+
+## Tujuan Utama Blok 2
+1. Membuat tabel `pengajuan_juduls` beserta Model dan Relasinya.
+2. Membuat Form Request untuk validasi input (submit judul & review DPA).
+3. Membuat Controller `PengajuanJudulController` untuk menangani CRUD dan logika bisnis.
+4. Menambahkan endpoint API yang dilindungi oleh middleware role-based.
+5. Menangani upload file dokumen proposal PDF ke local storage private.
+
+---
+
+## Langkah 1: Pembuatan Migration dan Model
+
+Jalankan perintah berikut di terminal untuk membuat Model beserta Migration-nya:
+```bash
+php artisan make:model PengajuanJudul -m
+```
+
+### 1.1 Struktur Tabel `pengajuan_juduls` di Migration
+Buka file migrasi yang baru saja dibuat di folder `database/migrations/` dan sesuaikan struktur tabelnya:
+```php
+public function up()
+{
+    Schema::create('pengajuan_juduls', function (Blueprint $table) {
+        $table->id();
+        $table->foreignId('mahasiswa_id')->constrained('users')->cascadeOnDelete();
+        $table->string('judul');
+        $table->string('topik');
+        $table->string('bidang');
+        $table->text('latar_belakang');
+        $table->string('file_proposal')->nullable(); // Path file PDF
+        $table->enum('status', ['draft', 'diajukan', 'perlu_revisi', 'disetujui', 'ditolak'])->default('diajukan');
+        $table->text('catatan_dpa')->nullable();
+        $table->timestamps();
+    });
+}
+```
+
+Jalankan migrasi:
+```bash
+php artisan migrate
+```
+
+---
+
+## Langkah 2: Setup Relasi pada Model
+
+Buka model `App\Models\PengajuanJudul` dan tambahkan properti fillable serta relasinya:
+
+```php
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+
+class PengajuanJudul extends Model
+{
+    use HasFactory;
+
+    protected $fillable = [
+        'mahasiswa_id',
+        'judul',
+        'topik',
+        'bidang',
+        'latar_belakang',
+        'file_proposal',
+        'status',
+        'catatan_dpa',
+    ];
+
+    // Relasi ke tabel users (mahasiswa yang mengajukan)
+    public function mahasiswa()
+    {
+        return $this->belongsTo(User::class, 'mahasiswa_id');
+    }
+}
+```
+
+**Instruksi Tambahan untuk `App\Models\User`:**
+Pastikan model `User` sudah memiliki fungsi untuk mengambil daftar pengajuan (untuk mahasiswa).
+```php
+public function pengajuanJuduls()
+{
+    return $this->hasMany(PengajuanJudul::class, 'mahasiswa_id');
+}
+```
+
+---
+
+## Langkah 3: Pembuatan Form Request (Validasi)
+
+### 3.1 Request untuk Submit Judul
+Jalankan perintah:
+```bash
+php artisan make:request StorePengajuanJudulRequest
+```
+**Instruksi `StorePengajuanJudulRequest`:**
+- Ubah method `authorize()` agar me-return `true` (atau batasi hanya untuk role mahasiswa).
+- Tambahkan rules di method `rules()`:
+```php
+return [
+    'judul' => 'required|string|max:255',
+    'topik' => 'required|string|max:255',
+    'bidang' => 'required|string|max:255',
+    'latar_belakang' => 'required|string',
+    'file_proposal' => 'required|file|mimes:pdf|max:5120', // Maks 5MB
+];
+```
+
+### 3.2 Request untuk Review DPA
+Jalankan perintah:
+```bash
+php artisan make:request ReviewPengajuanJudulRequest
+```
+**Instruksi `ReviewPengajuanJudulRequest`:**
+- Ubah method `authorize()` menjadi `true` (atau batasi khusus role DPA).
+- Tambahkan rules:
+```php
+return [
+    'status' => 'required|in:perlu_revisi,disetujui,ditolak',
+    'catatan_dpa' => 'nullable|string'
+];
+```
+
+---
+
+## Langkah 4: Pembuatan Controller
+
+Jalankan perintah:
+```bash
+php artisan make:controller Api/v1/PengajuanJudulController
+```
+
+**Instruksi untuk `PengajuanJudulController`:**
+1. **`index(Request $request)`**
+   - Ambil data `PengajuanJudul`.
+   - **Filter Role:**
+     - Jika user login adalah `Mahasiswa` (cek role): kembalikan hanya pengajuan milik user tersebut (`where('mahasiswa_id', $user->id)`).
+     - Jika user login adalah `DPA` (cek role): kembalikan daftar pengajuan dari seluruh mahasiswa perwaliannya. Anda bisa melakukan join dengan tabel `mahasiswas` di mana `dpa_id` sama dengan ID Dosen/User login saat ini.
+   - Return menggunakan `response()->json()`.
+
+2. **`store(StorePengajuanJudulRequest $request)`**
+   - Ambil data tervalidasi.
+   - Simpan file PDF ke `storage/app/private/proposals`.
+     *(Contoh: `$path = $request->file('file_proposal')->store('proposals', 'private');`)*
+   - Simpan record ke database menggunakan `$request->user()->pengajuanJuduls()->create([...])` dengan path file yang sudah didapat dan status default `diajukan`.
+   - Return response data dengan HTTP code 201 (Created).
+
+3. **`show($id)`**
+   - Cari data berdasarkan ID (`PengajuanJudul::with('mahasiswa')->findOrFail($id);`).
+   - *Otorisasi (Optional):* Pastikan hanya pembuat (mahasiswa) atau DPA terkait yang bisa melihat detail (bisa diletakkan di logic atau Policy).
+   - Return detail record dalam bentuk JSON.
+
+4. **`review(ReviewPengajuanJudulRequest $request, $id)`**
+   - Cari data berdasarkan ID.
+   - Update field `status` dan `catatan_dpa` sesuai payload request.
+   - Return JSON response berisi data terbaru.
+
+---
+
+## Langkah 5: Setup Routes & Middleware
+
+Buka file `routes/api.php` dan daftarkan routing untuk fitur ini.
+
+Tambahkan di dalam blok middleware Sanctum yang sudah dibuat sebelumnya di Blok 1:
+
+```php
+use App\Http\Controllers\Api\v1\PengajuanJudulController;
+
+Route::middleware('auth:sanctum')->prefix('v1')->group(function () {
+    
+    // Rute untuk Mahasiswa & DPA (Filter list data ditangani di controller)
+    Route::get('/pengajuan-judul', [PengajuanJudulController::class, 'index']);
+    Route::get('/pengajuan-judul/{id}', [PengajuanJudulController::class, 'show']);
+
+    // Khusus Mahasiswa (Role middleware disesuaikan dengan Spatie Permission)
+    Route::post('/pengajuan-judul', [PengajuanJudulController::class, 'store'])
+        ->middleware('role:Mahasiswa');
+
+    // Khusus DPA
+    Route::patch('/pengajuan-judul/{id}/review', [PengajuanJudulController::class, 'review'])
+        ->middleware('role:DPA');
+
+});
+```
+
+*(Catatan: Pastikan Spatie Permission middleware alias seperti `role` sudah didaftarkan pada `bootstrap/app.php` jika menggunakan Laravel 11, atau `Kernel.php` untuk versi lama, sehingga bisa digunakan di rute).*
+
+---
+
+## Langkah 6: Tahap Verifikasi (Acceptance Criteria)
+
+Sebelum berpindah ke Blok selanjutnya, pastikan hal-hal berikut telah diuji (bisa menggunakan Postman/Insomnia):
+
+1. [ ] **Role Mahasiswa - Submit Judul:** `POST /api/v1/pengajuan-judul` dengan form-data (termasuk file PDF `file_proposal`) berhasil mengembalikan HTTP 201 dan menyimpan file PDF di folder `storage/app/private/proposals`.
+2. [ ] **Role Mahasiswa - List Judul:** `GET /api/v1/pengajuan-judul` saat login sebagai Mahasiswa hanya menampilkan pengajuan judul miliknya sendiri.
+3. [ ] **Role DPA - List Judul Mahasiswa Bimbingan:** `GET /api/v1/pengajuan-judul` saat login sebagai DPA menampilkan daftar pengajuan dari mahasiswa bimbingannya.
+4. [ ] **Role DPA - Review Judul:** `PATCH /api/v1/pengajuan-judul/{id}/review` berhasil mengubah status menjadi `disetujui`, `perlu_revisi`, atau `ditolak` beserta catatan, serta mengembalikan JSON yang benar.
+5. [ ] **File Storage & Otorisasi:** Mengecek bahwa file fisik benar-benar ada di storage, dan pengguna yang role-nya tidak sesuai (misal Mahasiswa mencoba hit endpoint review DPA) mendapatkan response `403 Forbidden`.
+
+**Akhir dari Perencanaan Blok 2.**
